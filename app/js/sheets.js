@@ -13,7 +13,9 @@ import {
   formatDate,
   formatMoney,
   isDebtOverdue,
+  isToken,
   live,
+  makeSyncKey,
   monthKey,
   monthRange,
   monthTitle,
@@ -21,6 +23,7 @@ import {
   normalizeRepo,
   parseAmount,
   parseData,
+  parseSyncKey,
   plural,
   presetRange,
   serializeData,
@@ -40,23 +43,39 @@ const money = (kop, opts) => formatMoney(kop, opts);
 export const EMOJI = ['🛒', '🍔', '☕', '🍕', '🥡', '🚇', '🚕', '🚗', '⛽', '🏠', '💡', '📱', '💻', '📺', '🎮', '🎬', '🎉', '💊', '🦷', '💪', '👕', '👟', '💅', '💇', '🎁', '📚', '✈️', '🏖️', '🐶', '👶', '🚬', '🍺', '🧾', '💳', '💼', '💰', '🏦', '📈', '🧑‍💻', '📦'];
 
 // Первый символ (с учётом составных эмодзи вроде 🧑‍💻)
-function firstGrapheme(s) {
+export function firstGrapheme(s) {
   const t = String(s ?? '').trim();
   if (!t) return '';
   if (typeof Intl.Segmenter === 'function') return [...new Intl.Segmenter('ru', { granularity: 'grapheme' }).segment(t)][0].segment;
   return Array.from(t)[0];
 }
 
-const showError = (root, text) => {
+export const showError = (root, text) => {
   const el = $('.form-error', root);
   if (el) el.textContent = text ?? '';
 };
 
 const nextOrder = (type) => Math.max(0, ...live(state.data.categories).filter((c) => c.type === type).map((c) => c.order ?? 0)) + 1;
 
+// Сетка категорий для форм. Удалённую категорию выбранной записи тоже показываем,
+// чтобы при правке старой операции она не потерялась.
+export function catGridHtml(type, selectedId, { add = false } = {}) {
+  const cats = activeCategories(state.data.categories, type);
+  const current = state.data.categories.find((c) => c.id === selectedId && !c.deleted && c.type === type);
+  if (current && !cats.includes(current)) cats.unshift(current);
+  return html`
+    ${cats.map(
+      (c) => html`
+      <button type="button" class="cat-btn" data-cat="${c.id}" aria-pressed="${c.id === selectedId}">
+        <span class="e" aria-hidden="true">${c.emoji}</span><span class="n">${c.name}</span>
+      </button>`,
+    )}
+    ${add ? html`<button type="button" class="cat-btn add" data-add-cat><span class="e" aria-hidden="true">＋</span><span class="n">Своя категория</span></button>` : ''}`.s;
+}
+
 // ---------- Операция ----------
 
-export function openTxSheet({ id = null, type = 'expense', categoryId = null } = {}) {
+export function openTxSheet({ id = null, type = 'expense', categoryId = null, note = '' } = {}) {
   const existing = id ? state.data.transactions.find((t) => t.id === id && !t.deleted) : null;
   if (id && !existing) return;
   const today = todayISO();
@@ -85,7 +104,7 @@ export function openTxSheet({ id = null, type = 'expense', categoryId = null } =
         <button type="button" class="chip" data-date="${addDays(today, -1)}">Вчера</button>
         <input class="input" type="date" name="date" value="${existing?.date ?? today}" aria-label="Дата">
       </div>
-      <input class="input" name="note" maxlength="200" placeholder="Комментарий: где, что, зачем" value="${existing?.note ?? ''}" aria-label="Комментарий">
+      <input class="input" name="note" maxlength="200" placeholder="Комментарий: где, что, зачем" value="${existing?.note ?? note}" aria-label="Комментарий">
       <p class="form-error" role="alert"></p>
       <div class="sheet-actions">
         ${existing ? html`<button type="button" class="btn danger" data-del>Удалить</button>` : ''}
@@ -98,18 +117,7 @@ export function openTxSheet({ id = null, type = 'expense', categoryId = null } =
   const renderType = () => $$('[data-type]', form).forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.type === f.type)));
   const renderDate = () => $$('[data-date]', form).forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.date === form.date.value)));
   const renderGrid = () => {
-    const cats = activeCategories(state.data.categories, f.type);
-    // У старой операции категория могла быть удалена — покажем её, чтобы не потерять
-    const current = state.data.categories.find((c) => c.id === f.categoryId && !c.deleted && c.type === f.type);
-    if (current && !cats.includes(current)) cats.unshift(current);
-    $('#catGrid', form).innerHTML = html`
-      ${cats.map(
-        (c) => html`
-        <button type="button" class="cat-btn" data-cat="${c.id}" aria-pressed="${c.id === f.categoryId}">
-          <span class="e" aria-hidden="true">${c.emoji}</span><span class="n">${c.name}</span>
-        </button>`,
-      )}
-      <button type="button" class="cat-btn add" data-add-cat><span class="e" aria-hidden="true">＋</span><span class="n">Своя категория</span></button>`.s;
+    $('#catGrid', form).innerHTML = catGridHtml(f.type, f.categoryId, { add: true });
     $('#catInline', form).innerHTML = f.addingCat
       ? html`
         <div class="inline-form">
@@ -187,13 +195,13 @@ export function openTxSheet({ id = null, type = 'expense', categoryId = null } =
     };
     const err = amount ? validateTransaction(rec) : 'Введи сумму — например 350 или 1 299,90';
     if (err) return showError(form, err);
-    const saved = await put('transactions', rec);
-    closeSheet();
-    // Операция за другой месяц — переключаемся туда, чтобы её было видно
-    if (monthKey(saved.date) !== state.ui.month) {
-      state.ui.month = monthKey(saved.date);
+    // Операция за другой месяц — переключаемся туда (до сохранения, чтобы перерисовка это учла)
+    if (monthKey(rec.date) !== state.ui.month) {
+      state.ui.month = monthKey(rec.date);
       state.ui.filterCat = null;
     }
+    const saved = await put('transactions', rec);
+    closeSheet();
     const cat = state.data.categories.find((c) => c.id === saved.categoryId);
     toast(existing ? 'Сохранено' : `${categoryLabel(cat)}: ${saved.type === 'income' ? '+' : '−'}${money(saved.amount)}`);
   });
@@ -587,10 +595,17 @@ export function openSyncSheet() {
     'Синхронизация',
     html`
     <p style="margin:4px 4px 8px;color:var(--text-2);font-size:15px">Данные будут храниться файлом <b>data.json</b> в твоём <b>приватном</b> репозитории. Так телефон и компьютер видят одно и то же, а история коммитов — бесплатный бэкап.</p>
+    <h3 class="section-title">Уже подключено на другом устройстве</h3>
+    <div class="group">
+      <button type="button" class="item" data-scan><span>📷 Сканировать QR-код</span><span class="hint">›</span></button>
+      <button type="button" class="item" data-paste><span>📋 Вставить ключ подключения</span><span class="hint">›</span></button>
+    </div>
+    <p class="note">Там: Настройки → Синхронизация → «Подключить другое устройство». Токен вводить не нужно.</p>
+    <h3 class="section-title">Первое подключение</h3>
     <ol class="steps">
       <li>Создай приватный репозиторий, например <b>trecker-data</b>: <a href="https://github.com/new" target="_blank" rel="noopener">github.com/new</a> → <b>Private</b>, галочка <b>Add a README file</b>.</li>
-      <li>Создай токен: <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">Fine-grained token</a> → Repository access: <b>Only select repositories</b> → этот репозиторий → Permissions → Repository → <b>Contents: Read and write</b>. Срок — побольше.</li>
-      <li>Вставь репозиторий и токен ниже. На втором устройстве — те же данные.</li>
+      <li>Создай токен: <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">Fine-grained token</a> → Expiration: <b>Custom</b> на год (или No expiration) → Repository access: <b>Only select repositories</b> → этот репозиторий → Permissions → Repository → <b>Contents: Read and write</b>.</li>
+      <li>Вставь репозиторий и токен ниже.</li>
     </ol>
     <form id="syncForm" novalidate autocomplete="off">
       <label class="field"><span>Репозиторий</span><input class="input" name="repo" placeholder="логин/trecker-data" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
@@ -601,12 +616,8 @@ export function openSyncSheet() {
     <p class="note" style="padding:10px 4px 0">Токен хранится только на этом устройстве и даёт доступ к одному репозиторию. Утёк — удали его на GitHub и создай новый.</p>`,
   );
   const form = $('#syncForm', body);
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const repo = normalizeRepo(form.repo.value);
-    const token = form.token.value.trim();
-    if (!repo) return showError(form, 'Репозиторий в формате логин/название');
-    if (!/^[A-Za-z0-9_]{20,255}$/.test(token)) return showError(form, 'Вставь токен целиком — он начинается с github_pat_');
+
+  async function connect({ repo, token }) {
     const btn = $('button[type=submit]', form);
     btn.disabled = true;
     btn.textContent = 'Подключаю…';
@@ -620,6 +631,136 @@ export function openSyncSheet() {
       btn.disabled = false;
       btn.textContent = 'Подключить';
       showError(form, `${err.message} ${SYNC_HINTS[err.code] ?? ''}`);
+    }
+  }
+
+  // Ключ, вставленный в любое из полей, раскладываем по полям сам
+  form.addEventListener('input', (e) => {
+    const key = parseSyncKey(e.target.value);
+    if (!key) return;
+    form.repo.value = key.repo;
+    form.token.value = key.token;
+    connect(key);
+  });
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const repo = normalizeRepo(form.repo.value);
+    const token = form.token.value.trim();
+    if (!repo) return showError(form, 'Репозиторий в формате логин/название');
+    if (!isToken(token)) return showError(form, 'Вставь токен целиком — он начинается с github_pat_');
+    await connect({ repo, token });
+  });
+  body.addEventListener('click', async (e) => {
+    const t = e.target.closest('button');
+    if (!t) return;
+    if ('scan' in t.dataset) renderScanner();
+    else if ('paste' in t.dataset) {
+      let text = '';
+      try {
+        text = await navigator.clipboard.readText();
+      } catch {
+        return showError(form, 'Браузер не дал прочитать буфер обмена — вставь ключ в поле «Репозиторий».');
+      }
+      const key = parseSyncKey(text);
+      if (!key) return showError(form, 'В буфере нет ключа. На подключённом устройстве: Синхронизация → «Подключить другое устройство» → «Скопировать ключ».');
+      form.repo.value = key.repo;
+      form.token.value = key.token;
+      await connect(key);
+    }
+  });
+}
+
+// Сканер QR-кода с экрана другого устройства
+function renderScanner() {
+  let stop = null;
+  let closed = false;
+  const halt = () => {
+    closed = true;
+    stop?.();
+  };
+  const body = updateSheet(
+    'Сканирование',
+    html`
+    <div class="scanner"><video muted playsinline aria-label="Камера"></video><i class="scan-frame" aria-hidden="true"></i></div>
+    <p class="status-line" id="scanStatus" style="justify-content:center;margin:12px 4px">Наведи камеру на QR-код на экране другого устройства</p>
+    <p class="form-error" role="alert" style="text-align:center"></p>
+    <button type="button" class="btn ghost block" data-back>← Ввести вручную</button>`,
+    { onClose: halt },
+  );
+  const status = $('#scanStatus', body);
+  const video = $('video', body);
+
+  async function start() {
+    const { startScanner, describeCameraError } = await import('./qr.js');
+    try {
+      stop = await startScanner(video, onResult);
+      if (closed) stop();
+    } catch (err) {
+      if (!closed) showError(body, describeCameraError(err));
+    }
+  }
+
+  async function onResult(text) {
+    const key = parseSyncKey(text);
+    if (!key) {
+      showError(body, 'Это не ключ трекера. Открой QR в «Подключить другое устройство».');
+      setTimeout(() => !closed && (showError(body, ''), start()), 1500);
+      return;
+    }
+    status.textContent = `Подключаю ${key.repo}…`;
+    try {
+      await connectSync(key);
+      toast('Синхронизация включена ☁️');
+      renderSyncStatus();
+    } catch (err) {
+      if (state.settings.sync) return renderSyncStatus();
+      showError(body, `${err.message} ${SYNC_HINTS[err.code] ?? ''}`);
+    }
+  }
+
+  body.addEventListener('click', (e) => {
+    if (!e.target.closest('[data-back]')) return;
+    halt();
+    openSyncSheet();
+  });
+  start();
+}
+
+// QR-код и ключ для второго устройства
+function renderDeviceKey() {
+  const key = makeSyncKey(state.settings.sync);
+  let hideTimer = null;
+  const body = updateSheet(
+    'Другое устройство',
+    html`
+    <ol class="steps">
+      <li>На втором устройстве открой трекер (на айфоне — с иконки на экране «Домой»).</li>
+      <li>Настройки → Синхронизация через GitHub → <b>📷 Сканировать QR</b>.</li>
+      <li>Наведи камеру на код ниже.</li>
+    </ol>
+    <div class="qr-box" id="qrBox"><button type="button" class="btn primary" data-show>Показать QR-код</button></div>
+    <p class="note" style="padding:8px 4px 0">⚠️ В коде — токен доступа к репозиторию с твоими данными. Не показывай его посторонним и не делай скриншот. Код спрячется сам через 2 минуты.</p>
+    <div class="sheet-actions" style="flex-direction:column">
+      <button type="button" class="btn" data-copy>📋 Скопировать ключ текстом</button>
+      <button type="button" class="btn ghost" data-back>← Назад</button>
+    </div>`,
+    { onClose: () => clearTimeout(hideTimer) },
+  );
+  body.addEventListener('click', async (e) => {
+    const t = e.target.closest('button');
+    if (!t) return;
+    if ('show' in t.dataset) {
+      const { qrSvg } = await import('./qr.js');
+      $('#qrBox', body).innerHTML = qrSvg(key);
+      hideTimer = setTimeout(() => {
+        const box = $('#qrBox', body);
+        if (box) box.innerHTML = html`<button type="button" class="btn primary" data-show>Показать QR-код</button>`.s;
+      }, 120_000);
+    } else if ('copy' in t.dataset) {
+      if (await copyText(key)) toast('Ключ скопирован. Вставь его на другом устройстве и не пересылай в чаты', { ms: 6000 });
+    } else if ('back' in t.dataset) {
+      clearTimeout(hideTimer);
+      renderSyncStatus();
     }
   });
 }
@@ -637,6 +778,7 @@ function renderSyncStatus() {
     ${sync.status === 'error' ? html`<p class="note neg">${sync.error} ${SYNC_HINTS[sync.code] ?? ''}</p>` : ''}
     <div class="sheet-actions" style="flex-direction:column">
       <button type="button" class="btn primary" data-now>↻ Синхронизировать сейчас</button>
+      <button type="button" class="btn" data-device>📱 Подключить другое устройство</button>
       <button type="button" class="btn danger" data-off>Отключить на этом устройстве</button>
     </div>
     <p class="note" style="padding:10px 4px 0">Синхронизация идёт сама: при открытии, через пару секунд после правки и раз в минуту. Без интернета всё работает и догонится позже.</p>`,
@@ -654,6 +796,8 @@ function renderSyncStatus() {
         toast(err.message);
       }
       renderSyncStatus();
+    } else if ('device' in t.dataset) {
+      renderDeviceKey();
     } else if ('off' in t.dataset) {
       const ok = await confirmDialog({ title: 'Отключить синхронизацию?', text: 'Данные на устройстве и в репозитории останутся, но перестанут обмениваться. Токен удалится с этого устройства.', ok: 'Отключить', danger: true });
       if (!ok) return;

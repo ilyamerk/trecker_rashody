@@ -19,7 +19,8 @@ test('офлайн-кэш (sw.js) знает о каждом файле прил
   const listed = new Set([...sw.matchAll(/'\.\/([^']*)'/g)].map((m) => m[1]));
   const files = walk(APP)
     .map((p) => relative(APP, p).split('\\').join('/'))
-    .filter((p) => p !== 'sw.js');
+    // Документацию и лицензии не кэшируем — они не нужны для работы
+    .filter((p) => p !== 'sw.js' && !/\.(md|txt)$/.test(p));
   for (const f of files) assert.ok(listed.has(f), `добавь './${f}' в ASSETS в sw.js`);
   for (const f of listed) if (f && f !== 'index.html') assert.ok(files.includes(f), `в sw.js лишний файл './${f}'`);
 });

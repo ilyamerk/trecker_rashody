@@ -3,9 +3,11 @@
 // месяцы — 'YYYY-MM'.
 
 export const DATA_VERSION = 1;
-export const COLLECTIONS = ['transactions', 'categories', 'debts'];
+export const COLLECTIONS = ['transactions', 'categories', 'debts', 'recurring', 'presets'];
 export const TYPES = ['expense', 'income'];
 export const DEBT_DIRECTIONS = ['toMe', 'fromMe']; // toMe — мне должны, fromMe — я должен
+export const PERIODS = ['monthly', 'yearly'];
+export const MAX_PRESET_AMOUNTS = 8;
 
 export const MONTHS = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
 export const MONTHS_GEN = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
@@ -220,7 +222,42 @@ function fixDebt(r) {
   };
 }
 
-const FIXERS = { transactions: fixTransaction, categories: fixCategory, debts: fixDebt };
+function fixRecurring(r) {
+  const amount = kopecks(r.amount);
+  if (!TYPES.includes(r.type) || !amount || !PERIODS.includes(r.period) || !isISODate(r.anchor)) return null;
+  return {
+    ...r,
+    type: r.type,
+    amount,
+    categoryId: str(r.categoryId, 100),
+    name: str(r.name, 60) || 'Платёж',
+    note: str(r.note),
+    period: r.period,
+    anchor: r.anchor, // дата первого платежа — от неё считается расписание
+    from: isISODate(r.from) ? r.from : r.anchor, // раньше этой даты операции не создаются
+    paused: Boolean(r.paused),
+    createdAt: num(r.createdAt),
+    updatedAt: num(r.updatedAt),
+  };
+}
+
+function fixPreset(r) {
+  const amounts = [...new Set((Array.isArray(r.amounts) ? r.amounts : []).map(kopecks).filter(Boolean))].slice(0, MAX_PRESET_AMOUNTS);
+  if (!TYPES.includes(r.type) || !amounts.length) return null;
+  return {
+    ...r,
+    type: r.type,
+    label: str(r.label, 30) || 'Кнопка',
+    emoji: str(r.emoji, 16) || '⚡',
+    categoryId: str(r.categoryId, 100),
+    amounts,
+    note: str(r.note),
+    order: num(r.order),
+    updatedAt: num(r.updatedAt),
+  };
+}
+
+const FIXERS = { transactions: fixTransaction, categories: fixCategory, debts: fixDebt, recurring: fixRecurring, presets: fixPreset };
 
 export function normalizeData(raw = {}) {
   const data = { version: DATA_VERSION };
@@ -376,6 +413,115 @@ export function sortDebts(debts, today) {
   return { open, closed };
 }
 
+// ---------- Регулярные платежи ----------
+// Операции создаются сами, когда приложение открыто; пропущенные дни догоняются.
+// Id операции — функция правила и периода (месяца или года), и сама запись тоже:
+// два устройства создадут одно и то же, а удалённая операция не появится снова.
+
+// k-й платёж по расписанию; 31-е в коротком месяце → последний день месяца
+export function occurrenceDate(anchor, period, k) {
+  const [y, m, d] = anchor.split('-').map(Number);
+  const idx = period === 'yearly' ? (y + k) * 12 + (m - 1) : y * 12 + (m - 1) + k;
+  const yy = Math.floor(idx / 12);
+  const mm = (idx % 12) + 1;
+  const last = new Date(Date.UTC(yy, mm, 0)).getUTCDate();
+  return `${yy}-${pad2(mm)}-${pad2(Math.min(d, last))}`;
+}
+
+export const periodKey = (date, period) => (period === 'yearly' ? date.slice(0, 4) : date.slice(0, 7));
+export const recurringTxId = (rule, date) => `rec:${rule.id}:${periodKey(date, rule.period)}`;
+
+// Даты платежей от rule.from по today включительно
+export function dueDates(rule, today, limit = 1200) {
+  const out = [];
+  for (let k = 0; k < limit; k++) {
+    const date = occurrenceDate(rule.anchor, rule.period, k);
+    if (date > today) break;
+    if (date >= rule.from) out.push(date);
+  }
+  return out;
+}
+
+export function nextDate(rule, today, limit = 1200) {
+  if (rule.paused) return null;
+  for (let k = 0; k < limit; k++) {
+    const date = occurrenceDate(rule.anchor, rule.period, k);
+    if (date > today && date >= rule.from) return date;
+  }
+  return null;
+}
+
+export function generateRecurring(data, today) {
+  const existing = new Set(data.transactions.map((t) => t.id));
+  const out = [];
+  for (const rule of live(data.recurring)) {
+    if (rule.paused) continue;
+    for (const date of dueDates(rule, today)) {
+      const id = recurringTxId(rule, date);
+      if (existing.has(id)) continue; // уже есть или удалена пользователем («надгробие»)
+      existing.add(id);
+      out.push({
+        id,
+        type: rule.type,
+        amount: rule.amount,
+        categoryId: rule.categoryId,
+        date,
+        note: rule.note ? `${rule.name} · ${rule.note}` : rule.name,
+        recurringId: rule.id,
+        // Одинаковые на всех устройствах; любая правка пользователя окажется новее
+        createdAt: 0,
+        updatedAt: 1,
+      });
+    }
+  }
+  return out;
+}
+
+export const monthlyAmount = (rule) => (rule.period === 'yearly' ? Math.round(rule.amount / 12) : rule.amount);
+
+export function periodLabel(rule) {
+  const [, m, d] = rule.anchor.split('-').map(Number);
+  if (rule.period === 'yearly') return `каждый год, ${d} ${MONTHS_GEN[m - 1]}`;
+  return d >= 29 ? `каждый месяц, ${d}-го (или в последний день)` : `каждый месяц, ${d}-го`;
+}
+
+export function recurringSummary(recurring) {
+  const res = { expense: 0, income: 0, active: 0 };
+  for (const r of live(recurring)) {
+    if (r.paused) continue;
+    res[r.type] += monthlyAmount(r);
+    res.active += 1;
+  }
+  return res;
+}
+
+export function sortRecurring(recurring, today) {
+  return live(recurring).sort((a, b) => a.paused - b.paused || (nextDate(a, today) ?? '9999').localeCompare(nextDate(b, today) ?? '9999') || a.name.localeCompare(b.name, 'ru'));
+}
+
+export function validateRecurring({ type, amount, categoryId, name, period, anchor }) {
+  if (!TYPES.includes(type)) return 'Выбери: расход или доход';
+  if (!String(name ?? '').trim()) return 'Как назвать платёж? Например: Яндекс Плюс';
+  if (!kopecks(amount)) return 'Введи сумму больше нуля';
+  if (!categoryId) return 'Выбери категорию';
+  if (!PERIODS.includes(period)) return 'Выбери, как часто';
+  if (!isISODate(anchor)) return 'Укажи дату платежа';
+  return null;
+}
+
+// ---------- Быстрые кнопки ----------
+
+export const sortPresets = (presets) => live(presets).sort((a, b) => a.order - b.order || a.label.localeCompare(b.label, 'ru'));
+
+export function validatePreset({ label, emoji, categoryId, amounts }) {
+  if (!String(label ?? '').trim()) return 'Как подписать кнопку? Например: Кофе';
+  if (!String(emoji ?? '').trim()) return 'Выбери эмодзи';
+  if (!categoryId) return 'Выбери категорию';
+  if (!Array.isArray(amounts) || !amounts.length) return 'Добавь хотя бы одну сумму';
+  if (amounts.length > MAX_PRESET_AMOUNTS) return `Не больше ${MAX_PRESET_AMOUNTS} сумм`;
+  return null;
+}
+
 // ---------- Синхронизация: слияние версий ----------
 
 export function stableStringify(v) {
@@ -444,6 +590,17 @@ export function parseData(text) {
 }
 
 export const isRepo = (s) => typeof s === 'string' && /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(s);
+export const isToken = (s) => typeof s === 'string' && /^[A-Za-z0-9_]{20,255}$/.test(s);
+
+// Ключ подключения второго устройства (он же — содержимое QR-кода)
+const KEY_PREFIX = 'trecker1';
+export const makeSyncKey = ({ repo, token }) => `${KEY_PREFIX}|${repo}|${token}`;
+
+export function parseSyncKey(text) {
+  const [prefix, repo, token, ...rest] = String(text ?? '').trim().split('|');
+  if (prefix !== KEY_PREFIX || rest.length || !isRepo(repo) || !isToken(token)) return null;
+  return { repo, token };
+}
 
 // 'https://github.com/user/repo.git' → 'user/repo'
 export function normalizeRepo(input) {
@@ -592,6 +749,23 @@ export function buildAIReport(data, { from, to, notes = true, income = true, deb
       return row;
     });
     out.push(`## Самые крупные траты (топ-${s.topExpenses.length})`, '', table(topHead, topRows, notes ? ['l', 'l', 'r', 'l'] : ['l', 'l', 'r']), '');
+  }
+
+  const rules = live(data.recurring).filter((r) => !r.paused && (income || r.type === 'expense'));
+  if (rules.length) {
+    const sum = recurringSummary(rules);
+    out.push('## Регулярные платежи (подписки, аренда, зарплата и т.п.)', '');
+    out.push(`Действуют сейчас. В месяц: расходы ${money(sum.expense)} ₽${income ? `, доходы ${money(sum.income)} ₽` : ''}. Их операции уже есть в списке ниже.`, '');
+    out.push(
+      table(
+        ['Название', 'Категория', 'Тип', 'Сумма, ₽', 'Как часто', 'В пересчёте на месяц, ₽'],
+        rules
+          .sort((a, b) => monthlyAmount(b) - monthlyAmount(a))
+          .map((r) => [mdCell(r.name), mdCell(categoryLabel(cats.get(r.categoryId))), r.type === 'expense' ? 'расход' : 'доход', money(r.amount), r.period === 'yearly' ? 'раз в год' : 'раз в месяц', money(monthlyAmount(r))]),
+        ['l', 'l', 'l', 'r', 'l', 'r'],
+      ),
+      '',
+    );
   }
 
   const list = s.transactions.filter((t) => income || t.type === 'expense').sort((a, b) => a.date.localeCompare(b.date) || a.createdAt - b.createdAt);
