@@ -84,12 +84,14 @@ export function renderList() {
         <span>Данные живут только на этом устройстве. Сохрани копию или включи синхронизацию.</span>
         <button type="button" class="btn" data-action="tab" data-tab="settings">Настроить</button>
       </div>` : ''}
-    <div class="chips quick" role="group" aria-label="Быстрые кнопки">
-      ${presets.map(
-        (p) => html`<button type="button" class="chip quick-btn" data-action="quick" data-id="${p.id}">${p.emoji} ${p.label} <span class="quick-sum">${p.amounts.length === 1 ? money(p.amounts[0]) : `${formatMoney(p.amounts[0], { currency: false })}–${money(p.amounts.at(-1))}`}</span></button>`,
-      )}
-      <button type="button" class="chip quick-add" data-action="preset-new" aria-label="Новая быстрая кнопка">${presets.length ? '＋' : '⚡ Быстрая кнопка'}</button>
-    </div>
+    ${presets.length
+      ? html`
+        <div class="chips quick" role="group" aria-label="Быстрые кнопки">
+          ${presets.map(
+            (p) => html`<button type="button" class="chip quick-btn" data-action="quick" data-id="${p.id}">${p.emoji} ${p.label} <span class="quick-sum">${p.amounts.length === 1 ? money(p.amounts[0]) : `${formatMoney(p.amounts[0], { currency: false })}–${money(p.amounts.at(-1))}`}</span></button>`,
+          )}
+        </div>`
+      : ''}
     <div class="chips" role="group" aria-label="Фильтр">
       ${typeChip('all', 'Все')}${typeChip('expense', 'Расходы')}${typeChip('income', 'Доходы')}
       ${filterCat || ui.filterCat ? html`<button type="button" class="chip" aria-pressed="true" data-action="clear-cat">${categoryLabel(filterCat)} ✕</button>` : ''}

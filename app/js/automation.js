@@ -268,16 +268,14 @@ export function openPresetsSheet() {
   body.addEventListener('click', (e) => {
     const t = e.target.closest('button');
     if (!t) return;
-    if ('new' in t.dataset) openPresetForm({ back: 'manage' });
-    else if (t.dataset.preset) openPresetForm({ id: t.dataset.preset, back: 'manage' });
+    if ('new' in t.dataset) openPresetForm();
+    else if (t.dataset.preset) openPresetForm({ id: t.dataset.preset });
   });
 }
 
-// back: 'manage' — вернуться к списку кнопок, 'close' — закрыть шторку
-export function openPresetForm({ id = null, back = 'close' } = {}) {
+export function openPresetForm({ id = null } = {}) {
   const existing = id ? state.data.presets.find((p) => p.id === id && !p.deleted) : null;
   const f = { type: existing?.type ?? 'expense', categoryId: existing?.categoryId ?? null, amounts: [...(existing?.amounts ?? [])] };
-  const done = () => (back === 'manage' ? openPresetsSheet() : closeSheet());
   const body = openSheet(
     existing ? 'Быстрая кнопка' : 'Новая быстрая кнопка',
     html`
@@ -305,7 +303,7 @@ export function openPresetForm({ id = null, back = 'close' } = {}) {
         ${existing ? html`<button type="button" class="btn danger" data-del>Удалить</button>` : ''}
         <button type="submit" class="btn primary">${existing ? 'Сохранить' : 'Добавить кнопку'}</button>
       </div>
-      ${back === 'manage' ? html`<button type="button" class="btn ghost block" data-back style="margin-top:6px">← Все кнопки</button>` : ''}
+      <button type="button" class="btn ghost block" data-back style="margin-top:6px">← Все кнопки</button>
     </form>`,
   );
   const form = $('#presetForm', body);
@@ -358,7 +356,7 @@ export function openPresetForm({ id = null, back = 'close' } = {}) {
     } else if ('back' in t.dataset) openPresetsSheet();
     else if ('del' in t.dataset) {
       const prev = await remove('presets', existing.id);
-      done();
+      openPresetsSheet();
       if (prev) toast(`Кнопка «${prev.label}» удалена`, { action: 'Вернуть', onAction: () => restore('presets', prev) });
     }
   });
@@ -378,6 +376,6 @@ export function openPresetForm({ id = null, back = 'close' } = {}) {
     if (err) return showError(form, err);
     await put('presets', rec);
     toast(existing ? 'Кнопка сохранена' : `Кнопка «${rec.emoji} ${rec.label}» добавлена на экран «Операции»`);
-    done();
+    openPresetsSheet();
   });
 }
