@@ -1,5 +1,5 @@
 // Состояние приложения, сохранение на устройство и фоновая синхронизация.
-import { emptyData, monthKey, normalizeData, todayISO } from './logic.js';
+import { COLLECTIONS, emptyData, generateRecurring, monthKey, normalizeData, todayISO } from './logic.js';
 import { kv, requestPersistence } from './store.js';
 import { createGitHubClient, deviceName, syncOnce } from './sync.js';
 import { toast } from './ui.js';
@@ -109,10 +109,20 @@ export async function replaceData(data) {
   state.data = normalizeData(data);
   // Восстановленные записи должны победить при синхронизации
   const now = Date.now();
-  for (const name of ['transactions', 'categories', 'debts']) {
+  for (const name of COLLECTIONS) {
     state.data[name] = state.data[name].map((r) => ({ ...r, updatedAt: Math.max(r.updatedAt, now) }));
   }
   await commit();
+}
+
+// Регулярные платежи: записываем наступившие. Записи не штампуем временем правки —
+// они одинаковые на всех устройствах (см. generateRecurring). Возвращает, сколько записано.
+export async function runRecurring() {
+  const records = generateRecurring(state.data, todayISO());
+  if (!records.length) return 0;
+  state.data.transactions.push(...records);
+  await commit();
+  return records.length;
 }
 
 export async function wipeDevice() {
@@ -164,6 +174,8 @@ export async function runSync({ manual = false } = {}) {
       });
       state.sync = { status: 'ok', error: null, code: null };
       await saveSettings({ lastSyncAt: Date.now() });
+      // С другого устройства могли прийти новые регулярные платежи
+      if (res.pulled) await runRecurring();
       return res;
     } catch (err) {
       state.sync = { status: 'error', error: err.message, code: err.code ?? null };

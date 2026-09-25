@@ -19,8 +19,10 @@ import {
   monthTitle,
   percentChange,
   plural,
+  recurringSummary,
   shortDate,
   sortDebts,
+  sortPresets,
   summarize,
   todayISO,
   weekday,
@@ -36,7 +38,9 @@ const signed = (t) => (t.type === 'income' ? money(t.amount, { sign: true }) : m
 
 function txRow(t, cats, today, { showDate = false } = {}) {
   const cat = cats.get(t.categoryId);
-  const sub = [showDate ? shortDate(t.date, today) : '', t.note].filter(Boolean).join(' · ');
+  // 🔁 — операция записана регулярным платежом
+  const note = t.recurringId ? `🔁 ${t.note}` : t.note;
+  const sub = [showDate ? shortDate(t.date, today) : '', note].filter(Boolean).join(' · ');
   return html`
     <button type="button" class="row" data-action="edit-tx" data-id="${t.id}">
       <span class="emoji" aria-hidden="true">${cat?.emoji ?? '❓'}</span>
@@ -65,6 +69,7 @@ export function renderList() {
 
   const typeChip = (value, label) => html`<button type="button" class="chip" data-action="filter-type" data-value="${value}" aria-pressed="${ui.filterType === value}">${label}</button>`;
   const filterCat = ui.filterCat ? cats.get(ui.filterCat) : null;
+  const presets = sortPresets(data.presets);
 
   return html`
     <div class="card">
@@ -79,6 +84,12 @@ export function renderList() {
         <span>Данные живут только на этом устройстве. Сохрани копию или включи синхронизацию.</span>
         <button type="button" class="btn" data-action="tab" data-tab="settings">Настроить</button>
       </div>` : ''}
+    <div class="chips quick" role="group" aria-label="Быстрые кнопки">
+      ${presets.map(
+        (p) => html`<button type="button" class="chip quick-btn" data-action="quick" data-id="${p.id}">${p.emoji} ${p.label} <span class="quick-sum">${p.amounts.length === 1 ? money(p.amounts[0]) : `${formatMoney(p.amounts[0], { currency: false })}–${money(p.amounts.at(-1))}`}</span></button>`,
+      )}
+      <button type="button" class="chip quick-add" data-action="preset-new" aria-label="Новая быстрая кнопка">${presets.length ? '＋' : '⚡ Быстрая кнопка'}</button>
+    </div>
     <div class="chips" role="group" aria-label="Фильтр">
       ${typeChip('all', 'Все')}${typeChip('expense', 'Расходы')}${typeChip('income', 'Доходы')}
       ${filterCat || ui.filterCat ? html`<button type="button" class="chip" aria-pressed="true" data-action="clear-cat">${categoryLabel(filterCat)} ✕</button>` : ''}
@@ -298,6 +309,8 @@ function syncStatus() {
 export function renderSettings(build) {
   const { settings, sync } = state;
   const bioSupported = webauthnSupported();
+  const recurring = recurringSummary(state.data.recurring);
+  const presetCount = state.data.presets.filter((p) => !p.deleted).length;
   const lockOpts = [
     [0, 'сразу'],
     [60, 'через 1 мин'],
@@ -309,6 +322,12 @@ export function renderSettings(build) {
     <div class="group">
       <button type="button" class="item" data-action="categories" data-type="expense"><span>🛒 Категории расходов</span><span class="hint">›</span></button>
       <button type="button" class="item" data-action="categories" data-type="income"><span>💼 Категории доходов</span><span class="hint">›</span></button>
+    </div>
+
+    <h3 class="section-title">Автоматизация</h3>
+    <div class="group">
+      <button type="button" class="item" data-action="recurring"><span>🔁 Регулярные платежи</span><span class="hint">${recurring.active ? `${rub(recurring.expense)}/мес` : 'нет'} ›</span></button>
+      <button type="button" class="item" data-action="presets"><span>⚡ Быстрые кнопки</span><span class="hint">${presetCount || 'нет'} ›</span></button>
     </div>
 
     <h3 class="section-title">Выгрузка</h3>

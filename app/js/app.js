@@ -1,4 +1,5 @@
 // Точка входа: загрузка, вкладки, обработка нажатий.
+import { openPresetForm, openPresetsSheet, openRecurringSheet, quickAdd } from './automation.js';
 import { debtsSummary, monthKey, monthTitle, shiftMonth, todayISO } from './logic.js';
 import { disableBiometric, enableBiometric, initAutoLock, isLocked, openPinSetup, showLock } from './lockscreen.js';
 import {
@@ -11,7 +12,7 @@ import {
   restoreBackup,
   saveBackup,
 } from './sheets.js';
-import { loadState, onChange, runSync, saveSettings, startSyncLoop, state, wipeDevice } from './state.js';
+import { loadState, onChange, runRecurring, runSync, saveSettings, startSyncLoop, state, wipeDevice } from './state.js';
 import { $, $$, confirmDialog, initSheet, initTooltips, toast } from './ui.js';
 import { renderDebts, renderList, renderSettings, renderStats } from './views.js';
 
@@ -105,6 +106,18 @@ const actions = {
     scrollTo(0, 0);
     render();
   },
+  quick(el) {
+    quickAdd(el.dataset.id);
+  },
+  'preset-new'() {
+    openPresetForm();
+  },
+  presets() {
+    openPresetsSheet();
+  },
+  recurring() {
+    openRecurringSheet();
+  },
   'open-debt'(el) {
     openDebtSheet(el.dataset.id);
   },
@@ -197,6 +210,11 @@ function registerServiceWorker() {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 
+async function recordRecurring() {
+  const n = await runRecurring();
+  if (n && !isLocked()) toast(`🔁 Записаны регулярные платежи: ${n}`);
+}
+
 async function boot() {
   initSheet();
   initTooltips();
@@ -212,6 +230,10 @@ async function boot() {
   initAutoLock(lock);
   if (state.settings.pin) lock();
   else renderNow();
+  await recordRecurring();
+  // Новый день мог наступить, пока приложение было открыто или свёрнуто
+  setInterval(recordRecurring, 60_000);
+  document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && recordRecurring());
   startSyncLoop();
   registerServiceWorker();
 }

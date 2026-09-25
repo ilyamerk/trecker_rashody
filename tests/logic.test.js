@@ -11,22 +11,33 @@ import {
   elapsedDays,
   emptyData,
   formatMoney,
+  generateRecurring,
   groupByDay,
+  dueDates,
   isISODate,
+  makeSyncKey,
   mergeData,
   monthRange,
   monthlyTotals,
+  nextDate,
   normalizeData,
   normalizeRepo,
   parseAmount,
+  occurrenceDate,
   parseData,
+  parseSyncKey,
+  periodLabel,
   plural,
   presetRange,
+  recurringSummary,
   serializeData,
   shiftMonth,
   sortDebts,
+  sortPresets,
   summarize,
+  validatePreset,
   validateRange,
+  validateRecurring,
   validateTransaction,
   weekday,
 } from '../app/js/logic.js';
@@ -305,4 +316,123 @@ test('buildCSV: Excel-формат, формулы обезврежены', () =
   assert.equal(lines[0], '\ufeffДата;Тип;Категория;Сумма;Комментарий');
   assert.equal(lines[1], `01.09.2026;Расход;Продукты;1234,56;"'=HYPERLINK(""x"")"`);
   assert.equal(lines[2], '02.09.2026;Расход;Продукты;1,00;"a;b"');
+});
+
+// ---------- Регулярные платежи ----------
+
+const rule = (extra = {}) => ({ id: 'r1', type: 'expense', amount: 29900, categoryId: 'exp-subs', name: 'Яндекс Плюс', note: '', period: 'monthly', anchor: '2026-07-31', updatedAt: 5, ...extra });
+
+test('расписание: 31-е в коротком месяце — последний день, 29 февраля раз в год', () => {
+  assert.equal(occurrenceDate('2026-01-31', 'monthly', 1), '2026-02-28');
+  assert.equal(occurrenceDate('2026-01-31', 'monthly', 2), '2026-03-31');
+  assert.equal(occurrenceDate('2026-11-15', 'monthly', 3), '2027-02-15');
+  assert.equal(occurrenceDate('2024-02-29', 'yearly', 1), '2025-02-28');
+  assert.equal(occurrenceDate('2024-02-29', 'yearly', 4), '2028-02-29');
+});
+
+test('dueDates и nextDate: от from по сегодня', () => {
+  const r = normalizeData({ recurring: [rule()] }).recurring[0];
+  assert.equal(r.from, '2026-07-31'); // по умолчанию — с первого платежа
+  assert.deepEqual(dueDates(r, '2026-09-25'), ['2026-07-31', '2026-08-31']);
+  assert.equal(nextDate(r, '2026-09-25'), '2026-09-30');
+  assert.deepEqual(dueDates({ ...r, from: '2026-08-01' }, '2026-09-30'), ['2026-08-31', '2026-09-30']);
+  assert.equal(nextDate({ ...r, paused: true }, '2026-09-25'), null);
+  assert.deepEqual(dueDates({ ...r, anchor: '2026-10-01', from: '2026-10-01' }, '2026-09-25'), []);
+});
+
+test('generateRecurring: догоняет пропущенные, без дублей, удалённые не воскрешает', () => {
+  const data = normalizeData({ recurring: [rule()] });
+  const first = generateRecurring(data, '2026-09-25');
+  assert.deepEqual(first.map((t) => t.id), ['rec:r1:2026-07', 'rec:r1:2026-08']);
+  assert.equal(first[0].note, 'Яндекс Плюс');
+  assert.equal(first[0].amount, 29900);
+  assert.equal(first[0].recurringId, 'r1');
+  // Второй прогон ничего не добавляет
+  data.transactions.push(...first);
+  assert.equal(generateRecurring(data, '2026-09-25').length, 0);
+  // Удалённая пользователем операция не создаётся снова
+  data.transactions[0] = { id: 'rec:r1:2026-07', deleted: true, updatedAt: 99 };
+  assert.equal(generateRecurring(data, '2026-09-25').length, 0);
+  // Наступил новый месяц
+  assert.deepEqual(generateRecurring(data, '2026-09-30').map((t) => t.date), ['2026-09-30']);
+});
+
+test('generateRecurring: два устройства создают одинаковые записи — слияние без конфликтов', () => {
+  const a = normalizeData({ recurring: [rule()] });
+  const b = normalizeData({ recurring: [rule()] });
+  a.transactions.push(...generateRecurring(a, '2026-09-25'));
+  b.transactions.push(...generateRecurring(b, '2026-09-25'));
+  const res = mergeData(a, b);
+  assert.equal(res.localChanged, false);
+  assert.equal(res.remoteChanged, false);
+  assert.equal(res.data.transactions.length, 2);
+});
+
+test('generateRecurring: смена дня платежа не дублирует уже записанный месяц', () => {
+  const data = normalizeData({ recurring: [rule({ anchor: '2026-09-05' })] });
+  data.transactions.push(...generateRecurring(data, '2026-09-25'));
+  data.recurring[0] = { ...data.recurring[0], anchor: '2026-09-20', from: '2026-09-20' };
+  assert.equal(generateRecurring(data, '2026-09-25').length, 0);
+});
+
+test('generateRecurring: на паузе и удалённые правила молчат', () => {
+  const data = normalizeData({ recurring: [rule({ paused: true }), { id: 'r2', deleted: true, updatedAt: 3 }] });
+  assert.equal(generateRecurring(data, '2026-09-25').length, 0);
+});
+
+test('regular: подписи, сводка в месяц, валидация', () => {
+  assert.equal(periodLabel({ anchor: '2026-09-05', period: 'monthly' }), 'каждый месяц, 5-го');
+  assert.equal(periodLabel({ anchor: '2026-01-31', period: 'monthly' }), 'каждый месяц, 31-го (или в последний день)');
+  assert.equal(periodLabel({ anchor: '2026-03-12', period: 'yearly' }), 'каждый год, 12 марта');
+  const sum = recurringSummary(normalizeData({ recurring: [rule(), rule({ id: 'r2', amount: 120000, period: 'yearly' }), rule({ id: 'r3', paused: true }), rule({ id: 'r4', type: 'income', amount: 5000000, categoryId: 'inc-salary' })] }).recurring);
+  assert.deepEqual(sum, { expense: 29900 + 10000, income: 5000000, active: 3 });
+  const ok = { type: 'expense', amount: 100, categoryId: 'exp-subs', name: 'Кино', period: 'monthly', anchor: '2026-09-01' };
+  assert.equal(validateRecurring(ok), null);
+  assert.match(validateRecurring({ ...ok, name: ' ' }), /назвать/);
+  assert.match(validateRecurring({ ...ok, period: 'weekly' }), /как часто/);
+});
+
+test('normalizeData: мусорные правила и кнопки отбрасываются, суммы кнопок без дублей', () => {
+  const d = normalizeData({
+    recurring: [rule({ id: 'bad', period: 'daily' }), rule({ id: 'ok' })],
+    presets: [
+      { id: 'p1', type: 'expense', label: 'Стики', emoji: '🚬', categoryId: 'exp-other', amounts: [23000, 23000, -5, 'x'] },
+      { id: 'p2', type: 'expense', label: 'Пусто', emoji: '⚡', categoryId: 'exp-other', amounts: [] },
+    ],
+  });
+  assert.deepEqual(d.recurring.map((r) => r.id), ['ok']);
+  assert.deepEqual(d.presets.map((p) => [p.id, p.amounts]), [['p1', [23000]]]);
+});
+
+test('быстрые кнопки: сортировка и валидация', () => {
+  const list = normalizeData({
+    presets: [
+      { id: 'b', type: 'expense', label: 'Тройка', emoji: '🚇', categoryId: 'exp-transport', amounts: [20000], order: 2 },
+      { id: 'a', type: 'expense', label: 'Кофе', emoji: '☕', categoryId: 'exp-cafe', amounts: [25000], order: 1 },
+    ],
+  }).presets;
+  assert.deepEqual(sortPresets(list).map((p) => p.id), ['a', 'b']);
+  const ok = { label: 'Кофе', emoji: '☕', categoryId: 'exp-cafe', amounts: [25000] };
+  assert.equal(validatePreset(ok), null);
+  assert.match(validatePreset({ ...ok, amounts: [] }), /сумму/);
+  assert.match(validatePreset({ ...ok, label: '' }), /подписать/);
+});
+
+test('ключ подключения: туда-обратно и защита от мусора', () => {
+  const key = makeSyncKey({ repo: 'ilya/trecker-data', token: 'github_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ' });
+  assert.deepEqual(parseSyncKey(`  ${key}\n`), { repo: 'ilya/trecker-data', token: 'github_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ' });
+  assert.equal(parseSyncKey('https://example.com'), null);
+  assert.equal(parseSyncKey('trecker1|ilya|github_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ'), null);
+  assert.equal(parseSyncKey('trecker1|ilya/data|short'), null);
+  assert.equal(parseSyncKey(`${key}|extra`), null);
+});
+
+test('buildAIReport: раздел регулярных платежей', () => {
+  const data = normalizeData({ recurring: [rule(), rule({ id: 'r2', name: 'Аренда', amount: 4500000, categoryId: 'exp-home', period: 'monthly', anchor: '2026-09-01' }), rule({ id: 'r3', name: 'Пауза', paused: true })] });
+  data.transactions.push(...generateRecurring(data, '2026-09-25'));
+  const md = buildAIReport(data, { from: '2026-09-01', to: '2026-09-30' }, '2026-09-25');
+  assert.match(md, /## Регулярные платежи/);
+  assert.match(md, /В месяц: расходы 45 299 ₽/);
+  assert.match(md, /\| Аренда \| 🏠 Дом и ЖКХ \| расход \| 45 000 \| раз в месяц \| 45 000 \|/);
+  assert.doesNotMatch(md, /Пауза/);
 });
