@@ -155,7 +155,6 @@ body.privacy main, body.privacy .topbar, body.privacy dialog { filter: blur(14px
 .chip.quick-btn { background: var(--accent-soft); border-color: transparent; }
 .chip.quick-btn:active { filter: brightness(0.9); }
 .quick-sum { color: var(--text-2); font-variant-numeric: tabular-nums; }
-.chip.quick-add { color: var(--accent-text); border-style: dashed; background: transparent; }
 .amount-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
 .amount-grid .btn { min-height: 56px; font-size: 18px; }
 

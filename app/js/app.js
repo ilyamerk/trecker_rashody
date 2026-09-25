@@ -1,5 +1,5 @@
 // Точка входа: загрузка, вкладки, обработка нажатий.
-import { openPresetForm, openPresetsSheet, openRecurringSheet, quickAdd } from './automation.js';
+import { openPresetsSheet, openRecurringSheet, quickAdd } from './automation.js';
 import { debtsSummary, monthKey, monthTitle, shiftMonth, todayISO } from './logic.js';
 import { disableBiometric, enableBiometric, initAutoLock, isLocked, openPinSetup, showLock } from './lockscreen.js';
 import {
@@ -108,9 +108,6 @@ const actions = {
   },
   quick(el) {
     quickAdd(el.dataset.id);
-  },
-  'preset-new'() {
-    openPresetForm();
   },
   presets() {
     openPresetsSheet();
