@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Расходы">
+  <meta name="format-detection" content="telephone=no">
+  <meta name="description" content="Личный трекер расходов и доходов. Данные хранятся на устройстве и в твоём приватном репозитории.">
+  <title>Расходы</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="css/style.css">
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <h1 id="title">Операции</h1>
+    <div class="month-switch" id="monthSwitch">
+      <button type="button" class="icon-btn" data-action="month" data-delta="-1" aria-label="Предыдущий месяц">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+      </button>
+      <button type="button" class="month-label" id="monthLabel" data-action="month-now" title="К текущему месяцу"></button>
+      <button type="button" class="icon-btn" data-action="month" data-delta="1" aria-label="Следующий месяц">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main id="main">
+    <section id="view-list" class="view" aria-label="Операции"></section>
+    <section id="view-stats" class="view" aria-label="Аналитика" hidden></section>
+    <section id="view-debts" class="view" aria-label="Долги" hidden></section>
+    <section id="view-settings" class="view" aria-label="Настройки" hidden></section>
+  </main>
+
+  <button type="button" class="fab" id="fab" data-action="add" aria-label="Добавить">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+  </button>
+
+  <nav class="tabbar" aria-label="Разделы">
+    <button type="button" class="tab" data-action="tab" data-tab="list">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/></svg>
+      <span>Операции</span>
+    </button>
+    <button type="button" class="tab" data-action="tab" data-tab="stats">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 20h18M6.5 16.5v-5M11.5 16.5V5M16.5 16.5v-8"/></svg>
+      <span>Аналитика</span>
+    </button>
+    <button type="button" class="tab" data-action="tab" data-tab="debts">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      <span>Долги</span>
+      <span class="dot" id="debtDot" hidden></span>
+    </button>
+    <button type="button" class="tab" data-action="tab" data-tab="settings">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg>
+      <span>Настройки</span>
+      <span class="dot" id="syncDot" hidden></span>
+    </button>
+  </nav>
+
+  <dialog id="sheet" class="sheet" aria-labelledby="sheetTitle"></dialog>
+  <dialog id="confirm" class="confirm" aria-labelledby="confirmTitle"></dialog>
+  <div id="lock" class="lock" hidden></div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <div id="tip" class="tip" role="tooltip" hidden></div>
+
+  <noscript>Для работы приложения нужен JavaScript.</noscript>
+</body>
+</html>

@@ -1,0 +1,51 @@
+name: Tests & Deploy
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: npm test
+
+  deploy:
+    # Публикуем только из основной ветки репозитория; в остальных гоняются одни тесты
+    if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Stamp build version
+        # Новый хэш в sw.js заставляет телефон скачать свежую версию приложения
+        run: |
+          BUILD="${GITHUB_SHA::7}"
+          sed -i "s/__BUILD__/${BUILD}/g" app/sw.js app/js/app.js
+          grep -q "'${BUILD}'" app/sw.js
+          grep -q "'${BUILD}'" app/js/app.js
+          ! grep -rq "__BUILD__" app/
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: app
+      - id: deployment
+        uses: actions/deploy-pages@v5
